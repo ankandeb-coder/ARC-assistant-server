@@ -14,7 +14,11 @@ GROQ_STT_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 # You can change this to any free model on OpenRouter
-LLM_MODEL = "nvidia/nemotron-3-nano-30b-a3b:free"
+# Options (as of 2026):
+#   "openrouter/free"                        -> auto-router picks any available free model (MOST RELIABLE, recommended)
+#   "nvidia/nemotron-3-nano-30b-a3b:free"    -> fast + good quality (specific model, may get deprecated over time)
+#   "meta-llama/llama-3.3-70b-instruct:free" -> higher quality, slightly slower
+LLM_MODEL = "openrouter/free"
 
 # Simple in-memory conversation history (per device, keyed by device_id)
 conversation_memory = {}
