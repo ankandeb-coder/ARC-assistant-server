@@ -121,23 +121,30 @@ def tool_find_song(mood_or_query):
     """Free FULL-length song search via the Internet Archive (archive.org).
     No signup or API key needed. Returns public-domain / openly licensed
     full tracks, not short previews."""
-    search_resp = requests.get(
-        "https://archive.org/advancedsearch.php",
-        params={
-            "q": f'({mood_or_query}) AND mediatype:(audio)',
-            "fl[]": "identifier",
-            "rows": 1,
-            "output": "json",
-        }
-    )
-    search_resp.raise_for_status()
-    docs = search_resp.json().get("response", {}).get("docs", [])
+
+    def search_archive(query):
+        search_resp = requests.get(
+            "https://archive.org/advancedsearch.php",
+            params={
+                "q": f'({query}) AND mediatype:(audio)',
+                "fl[]": "identifier",
+                "rows": 1,
+                "sort[]": "downloads desc",  # prefer popular/well-seeded items
+                "output": "json",
+            }
+        )
+        search_resp.raise_for_status()
+        return search_resp.json().get("response", {}).get("docs", [])
+
+    docs = search_archive(mood_or_query)
+    if not docs:
+        # Fallback to a generic, reliably-populated query if the specific one found nothing
+        docs = search_archive("music")
     if not docs:
         return None, f"No song found for '{mood_or_query}'."
 
     identifier = docs[0]["identifier"]
 
-    # Get the file list for this item to find a playable mp3
     meta_resp = requests.get(f"https://archive.org/metadata/{identifier}")
     meta_resp.raise_for_status()
     meta = meta_resp.json()
@@ -160,7 +167,7 @@ TOOLS_SYSTEM_PROMPT = (
     "exact format and nothing else: [TOOL: name | argument]\n"
     "- [TOOL: weather | <city name>] - get current weather for a city\n"
     "- [TOOL: search | <search query>] - search the web for current information\n"
-    "- [TOOL: song | <mood, genre, or song description>] - find and play a piece of music\n"
+    "- [TOOL: song | <mood, genre, or song description, in English keywords>] - find and play a full song\n"
     "Only use a tool when the user's request actually needs it (e.g. asking about "
     "current weather, recent news/events, or wanting to hear music). "
     "Otherwise, just answer normally in plain conversational text."
