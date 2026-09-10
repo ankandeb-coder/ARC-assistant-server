@@ -126,10 +126,13 @@ def tool_find_song(mood_or_query):
         search_resp = requests.get(
             "https://archive.org/advancedsearch.php",
             params={
-                "q": f'({query}) AND mediatype:(audio)',
+                # Restrict to the "audio_music" collection specifically, so we get
+                # actual music tracks instead of any audio (podcasts, religious
+                # recitations, audiobooks, etc. that also live under mediatype:audio)
+                "q": f'({query}) AND mediatype:(audio) AND collection:(audio_music)',
                 "fl[]": "identifier",
                 "rows": 1,
-                "sort[]": "downloads desc",  # prefer popular/well-seeded items
+                "sort[]": "downloads desc",
                 "output": "json",
             }
         )
@@ -138,8 +141,8 @@ def tool_find_song(mood_or_query):
 
     docs = search_archive(mood_or_query)
     if not docs:
-        # Fallback to a generic, reliably-populated query if the specific one found nothing
-        docs = search_archive("music")
+        # Fallback: still restricted to the music collection, just a broader term
+        docs = search_archive("song")
     if not docs:
         return None, f"No song found for '{mood_or_query}'."
 
