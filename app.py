@@ -18,11 +18,11 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 # You can change this to any free model on OpenRouter
 # Options (as of 2026):
-#   "meta-llama/llama-3.3-70b-instruct:free" -> reliable instruction-following, good for our TOOL marker format (recommended)
-#   "openrouter/free"                        -> auto-router picks ANY available free model each call - can be
-#                                                inconsistent, sometimes ignores our [TOOL: ...] format
-#   "nvidia/nemotron-3-nano-30b-a3b:free"    -> fast + good quality (specific model, may get deprecated over time)
-LLM_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
+#   "openrouter/free"                        -> auto-router picks any available free model - CONFIRMED WORKING,
+#                                                automatically satisfies data-policy requirements across providers
+#   "meta-llama/llama-3.3-70b-instruct:free" -> pinning a specific model can hit 404s if that model's specific
+#                                                provider needs a data-policy toggle the auto-router would've avoided
+LLM_MODEL = "openrouter/free"
 
 # Simple in-memory conversation history (per device, keyed by device_id)
 conversation_memory = {}
