@@ -18,10 +18,11 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 # You can change this to any free model on OpenRouter
 # Options (as of 2026):
-#   "openrouter/free"                        -> auto-router picks any available free model (MOST RELIABLE, recommended)
+#   "meta-llama/llama-3.3-70b-instruct:free" -> reliable instruction-following, good for our TOOL marker format (recommended)
+#   "openrouter/free"                        -> auto-router picks ANY available free model each call - can be
+#                                                inconsistent, sometimes ignores our [TOOL: ...] format
 #   "nvidia/nemotron-3-nano-30b-a3b:free"    -> fast + good quality (specific model, may get deprecated over time)
-#   "meta-llama/llama-3.3-70b-instruct:free" -> higher quality, slightly slower
-LLM_MODEL = "openrouter/free"
+LLM_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
 
 # Simple in-memory conversation history (per device, keyed by device_id)
 conversation_memory = {}
@@ -213,7 +214,7 @@ def get_llm_reply(user_text, device_id="default", sensor_context=None):
     }
 
     def call_llm(msgs):
-        payload = {"model": LLM_MODEL, "messages": msgs}
+        payload = {"model": LLM_MODEL, "messages": msgs, "max_tokens": 300}
         resp = requests.post(OPENROUTER_URL, headers=headers, json=payload)
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"].strip()
@@ -403,7 +404,8 @@ def describe_image(image_bytes):
                     }
                 ]
             }
-        ]
+        ],
+        "max_tokens": 150,
     }
 
     resp = requests.post(OPENROUTER_URL, headers=headers, json=payload)
