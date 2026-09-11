@@ -217,7 +217,17 @@ def get_llm_reply(user_text, device_id="default", sensor_context=None):
         payload = {"model": LLM_MODEL, "messages": msgs, "max_tokens": 300}
         resp = requests.post(OPENROUTER_URL, headers=headers, json=payload)
         resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"].strip()
+        data = resp.json()
+        choices = data.get("choices")
+        if not choices:
+            raise RuntimeError(f"OpenRouter returned no choices: {data}")
+        content = choices[0].get("message", {}).get("content")
+        if not content:
+            # Some free models occasionally return empty content (e.g. safety
+            # filter, malformed tool-call attempt). Fall back to a safe default
+            # instead of crashing.
+            content = "Sorry, I couldn't come up with a reply just now. Please try again."
+        return content.strip()
 
     first_reply = call_llm(messages)
     song_audio_url = None
@@ -410,7 +420,12 @@ def describe_image(image_bytes):
 
     resp = requests.post(OPENROUTER_URL, headers=headers, json=payload)
     resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"].strip()
+    data = resp.json()
+    choices = data.get("choices")
+    if not choices:
+        raise RuntimeError(f"OpenRouter returned no choices: {data}")
+    content = choices[0].get("message", {}).get("content")
+    return (content or "Unable to describe the image right now.").strip()
 
 
 @app.route("/process_text_only", methods=["POST"])
