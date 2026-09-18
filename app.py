@@ -1,6 +1,6 @@
 import os
 import io
-import re
+import json
 import asyncio
 import requests
 from flask import Flask, request, send_file, jsonify
@@ -218,22 +218,68 @@ def search_internet_archive(mood_or_query):
     return audio_url, f"{title} (full track, Internet Archive)"
 
 
-TOOL_MARKER_RE = re.compile(r"\[TOOL:\s*(\w+)\s*\|\s*(.+?)\]")
+TOOL_DEFINITIONS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Get the current weather for a city.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "city": {"type": "string", "description": "City name, e.g. 'Dhaka' or 'Kolkata'"}
+                },
+                "required": ["city"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Search the web for current information, news, or facts not known in advance.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "The search query, in English for best results"}
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "play_song",
+            "description": "Find and play a full song or piece of music.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Mood, genre, or song description, in English keywords"}
+                },
+                "required": ["query"],
+            },
+        },
+    },
+]
 
-TOOLS_SYSTEM_PROMPT = (
-    "\n\nYou have access to these tools. To use one, reply with ONLY a line in this "
-    "exact format and nothing else: [TOOL: name | argument]\n"
-    "- [TOOL: weather | <city name>] - get current weather for a city\n"
-    "- [TOOL: search | <search query>] - search the web for current information\n"
-    "- [TOOL: song | <mood, genre, or song description, in English keywords>] - find and play a full song\n"
-    "Only use a tool when the user's request actually needs it (e.g. asking about "
-    "current weather, recent news/events, or wanting to hear music). "
-    "Otherwise, just answer normally in plain conversational text."
-)
+
+def run_tool(name, args):
+    """Execute a tool by name and return (result_text, song_audio_url_or_None)."""
+    if name == "get_weather":
+        return tool_get_weather(args.get("city", "")), None
+    elif name == "web_search":
+        return tool_web_search(args.get("query", "")), None
+    elif name == "play_song":
+        audio_url, result_text = tool_find_song(args.get("query", ""))
+        return result_text, audio_url
+    else:
+        return f"Unknown tool: {name}", None
 
 
 def get_llm_reply(user_text, device_id="default", sensor_context=None):
-    """Send text to OpenRouter LLM, run a tool if requested, and return the final reply.
+    """Send text to OpenRouter LLM, run a tool via OpenRouter's native function-calling
+    API if requested, and return the final reply.
     Returns a tuple: (reply_text, song_audio_url_or_None)."""
     history = conversation_memory.get(device_id, [])
 
@@ -244,7 +290,9 @@ def get_llm_reply(user_text, device_id="default", sensor_context=None):
         "The user may speak in Bangla, English, or mixed Banglish - reply naturally "
         "in whichever language(s) the user used, matching their style. "
         "Prefer replying mostly in one dominant language (Bangla OR English) per response "
-        "so the reply can be converted to speech cleanly, but you may mix a few words if natural."
+        "so the reply can be converted to speech cleanly, but you may mix a few words if natural. "
+        "Only call a tool when the user's request genuinely needs it (current weather, "
+        "recent news/events, or wanting to hear music) - otherwise just answer directly."
     )
     if sensor_context:
         system_prompt += f" Current sensor readings: {sensor_context}."
@@ -256,8 +304,6 @@ def get_llm_reply(user_text, device_id="default", sensor_context=None):
             "Only mention this if the user's question is actually about what you can see."
         )
 
-    system_prompt += TOOLS_SYSTEM_PROMPT
-
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(history[-6:])
     messages.append({"role": "user", "content": user_text})
@@ -267,47 +313,49 @@ def get_llm_reply(user_text, device_id="default", sensor_context=None):
         "Content-Type": "application/json",
     }
 
-    def call_llm(msgs):
+    def call_llm(msgs, use_tools=True):
         payload = {"model": LLM_MODEL, "messages": msgs, "max_tokens": 300}
+        if use_tools:
+            payload["tools"] = TOOL_DEFINITIONS
         resp = requests.post(OPENROUTER_URL, headers=headers, json=payload)
         resp.raise_for_status()
         data = resp.json()
         choices = data.get("choices")
         if not choices:
             raise RuntimeError(f"OpenRouter returned no choices: {data}")
-        content = choices[0].get("message", {}).get("content")
-        if not content:
-            # Some free models occasionally return empty content (e.g. safety
-            # filter, malformed tool-call attempt). Fall back to a safe default
-            # instead of crashing.
-            content = "Sorry, I couldn't come up with a reply just now. Please try again."
-        return content.strip()
+        return choices[0].get("message", {})
 
-    first_reply = call_llm(messages)
+    assistant_message = call_llm(messages)
     song_audio_url = None
+    tool_calls = assistant_message.get("tool_calls")
 
-    tool_match = TOOL_MARKER_RE.search(first_reply)
-    if tool_match:
-        tool_name = tool_match.group(1).lower()
-        tool_arg = tool_match.group(2).strip()
+    if tool_calls:
+        # Only handle the first tool call for simplicity (our tools are single-step)
+        call = tool_calls[0]
+        fn_name = call["function"]["name"]
+        try:
+            fn_args = json.loads(call["function"].get("arguments") or "{}")
+        except json.JSONDecodeError:
+            fn_args = {}
 
-        if tool_name == "weather":
-            tool_result = tool_get_weather(tool_arg)
-        elif tool_name == "search":
-            tool_result = tool_web_search(tool_arg)
-        elif tool_name == "song":
-            song_audio_url, tool_result = tool_find_song(tool_arg)
-        else:
-            tool_result = "Unknown tool requested."
+        tool_result_text, song_audio_url = run_tool(fn_name, fn_args)
 
-        # Ask the LLM again, now with the tool's result, to produce a natural final reply
+        # Reply to the model with the tool's result, using the proper "tool" role,
+        # so it can produce a natural final answer.
         followup_messages = messages + [
-            {"role": "assistant", "content": first_reply},
-            {"role": "user", "content": f"[TOOL RESULT: {tool_result}] Now answer the user naturally using this information, in 1-2 short sentences."}
+            assistant_message,
+            {
+                "role": "tool",
+                "tool_call_id": call.get("id", "call_1"),
+                "content": tool_result_text,
+            },
         ]
-        final_reply = call_llm(followup_messages)
+        final_message = call_llm(followup_messages, use_tools=False)
+        final_reply = final_message.get("content") or tool_result_text
     else:
-        final_reply = first_reply
+        final_reply = assistant_message.get("content") or "Sorry, I couldn't come up with a reply just now."
+
+    final_reply = final_reply.strip()
 
     history.append({"role": "user", "content": user_text})
     history.append({"role": "assistant", "content": final_reply})
