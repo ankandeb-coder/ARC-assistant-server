@@ -11,7 +11,8 @@ app = Flask(__name__)
 # ---------------- CONFIG ----------------
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
-TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")  # optional - web search tool won't work without this
+GOOGLE_DRIVE_API_KEY = os.environ.get("GOOGLE_DRIVE_API_KEY", "")      # optional - your own songs on Drive
+GOOGLE_DRIVE_FOLDER_ID = os.environ.get("GOOGLE_DRIVE_FOLDER_ID", "")  # the shared folder holding your mp3s
 
 GROQ_STT_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -94,42 +95,96 @@ def tool_get_weather(location):
 
 
 def tool_web_search(query):
-    """Free-tier web search via Tavily. Returns a short text summary of top results."""
-    if not TAVILY_API_KEY:
-        return "Web search is not configured on this server (missing TAVILY_API_KEY)."
+    """Free web/news search via DuckDuckGo (no API key or signup needed).
+    NOTE: This uses an unofficial scraping-based library (ddgs), since
+    DuckDuckGo has no official free search API. It can occasionally get
+    rate-limited or blocked (especially from cloud/datacenter IPs like
+    Render's), in which case it will return an error message instead of
+    crashing - the LLM will just tell the user search isn't available
+    right now."""
+    from ddgs import DDGS
 
-    resp = requests.post(
-        "https://api.tavily.com/search",
-        json={"api_key": TAVILY_API_KEY, "query": query, "max_results": 3, "search_depth": "basic"}
-    )
-    resp.raise_for_status()
-    data = resp.json()
+    try:
+        results = list(DDGS().news(query, max_results=3))
+        if not results:
+            # Fall back to general text search if no news results
+            results = list(DDGS().text(query, max_results=3))
+    except Exception as e:
+        return f"Web search is temporarily unavailable ({e})."
 
-    results = data.get("results", [])
     if not results:
         return f"No search results found for '{query}'."
 
     summary_parts = []
     for r in results[:3]:
         title = r.get("title", "")
-        content = r.get("content", "")[:200]
-        summary_parts.append(f"{title}: {content}")
+        body = (r.get("body") or "")[:200]
+        date = r.get("date", "")
+        summary_parts.append(f"{title} ({date}): {body}" if date else f"{title}: {body}")
 
     return " | ".join(summary_parts)
 
 
 def tool_find_song(mood_or_query):
+    """Find a song to play. Order of preference:
+    1. Your own Google Drive folder (your legally-owned mp3s - full songs, no copyright issue)
+    2. Internet Archive's music collection (free, legal, but limited/older catalog)
+    """
+    if GOOGLE_DRIVE_API_KEY and GOOGLE_DRIVE_FOLDER_ID:
+        audio_url, description = search_google_drive(mood_or_query)
+        if audio_url:
+            return audio_url, description
+
+    return search_internet_archive(mood_or_query)
+
+
+def search_google_drive(query):
+    """Search your shared Google Drive folder for a matching mp3 by filename.
+    Folder must be shared as 'Anyone with the link - Viewer'."""
+    list_resp = requests.get(
+        "https://www.googleapis.com/drive/v3/files",
+        params={
+            "q": f"'{GOOGLE_DRIVE_FOLDER_ID}' in parents and name contains '{query}' and trashed = false",
+            "key": GOOGLE_DRIVE_API_KEY,
+            "fields": "files(id, name)",
+        }
+    )
+    list_resp.raise_for_status()
+    files = list_resp.json().get("files", [])
+
+    if not files:
+        # Try a looser search: just list any mp3 in the folder if no name match
+        list_resp = requests.get(
+            "https://www.googleapis.com/drive/v3/files",
+            params={
+                "q": f"'{GOOGLE_DRIVE_FOLDER_ID}' in parents and trashed = false",
+                "key": GOOGLE_DRIVE_API_KEY,
+                "fields": "files(id, name)",
+                "pageSize": 50,
+            }
+        )
+        list_resp.raise_for_status()
+        files = list_resp.json().get("files", [])
+
+    if not files:
+        return None, None
+
+    chosen = files[0]
+    file_id = chosen["id"]
+    title = chosen.get("name", "Unknown")
+
+    audio_url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&key={GOOGLE_DRIVE_API_KEY}"
+    return audio_url, f"{title} (from your Google Drive)"
+
+
+def search_internet_archive(mood_or_query):
     """Free FULL-length song search via the Internet Archive (archive.org).
-    No signup or API key needed. Returns public-domain / openly licensed
-    full tracks, not short previews."""
+    No signup or API key needed. Fallback source if Google Drive has no match."""
 
     def search_archive(query):
         search_resp = requests.get(
             "https://archive.org/advancedsearch.php",
             params={
-                # Restrict to the "audio_music" collection specifically, so we get
-                # actual music tracks instead of any audio (podcasts, religious
-                # recitations, audiobooks, etc. that also live under mediatype:audio)
                 "q": f'({query}) AND mediatype:(audio) AND collection:(audio_music)',
                 "fl[]": "identifier",
                 "rows": 1,
@@ -142,7 +197,6 @@ def tool_find_song(mood_or_query):
 
     docs = search_archive(mood_or_query)
     if not docs:
-        # Fallback: still restricted to the music collection, just a broader term
         docs = search_archive("song")
     if not docs:
         return None, f"No song found for '{mood_or_query}'."
@@ -289,7 +343,7 @@ def text_to_speech(text, lang=None):
 
 @app.route("/", methods=["GET"])
 def home():
-    return "ARC Assistant Server is running."
+    return "ARC Assistant Server is running. Code version: v2-tool-null-safety-fix"
 
 
 @app.route("/process", methods=["POST"])
