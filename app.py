@@ -18,15 +18,11 @@ GOOGLE_DRIVE_FOLDER_ID = os.environ.get("GOOGLE_DRIVE_FOLDER_ID", "")  # the sha
 GROQ_STT_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-# You can change this to any free model on OpenRouter
-# Options (as of 2026):
-#   "meta-llama/llama-3.3-70b-instruct:free" -> reliable native tool-calling support, avoids the raw
-#                                                <|tool_call_start|>/<tool_call> text-leak issue seen with
-#                                                some models the "openrouter/free" auto-router can pick
-#   "openrouter/free"                        -> auto-router picks any available free model each call -
-#                                                convenient, but some picks don't implement tool-calling
-#                                                properly and leak raw tokens into the reply text
-LLM_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
+# Fixed, pinned model choice: OpenAI's own open-weight model, purpose-trained
+# for function calling / tool use (Harmony format). Hosted directly by OpenAI
+# on OpenRouter's free tier, so it avoids most of the "no provider satisfies
+# policy + tool-calling" 404 issues seen with other pinned third-party models.
+LLM_MODEL = "openai/gpt-oss-20b:free"
 
 # Simple in-memory conversation history (per device, keyed by device_id)
 conversation_memory = {}
