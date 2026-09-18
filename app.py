@@ -1,6 +1,7 @@
 import os
 import io
 import json
+import re
 import asyncio
 import requests
 from flask import Flask, request, send_file, jsonify
@@ -19,11 +20,13 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 # You can change this to any free model on OpenRouter
 # Options (as of 2026):
-#   "openrouter/free"                        -> auto-router picks any available free model - CONFIRMED WORKING,
-#                                                automatically satisfies data-policy requirements across providers
-#   "meta-llama/llama-3.3-70b-instruct:free" -> pinning a specific model can hit 404s if that model's specific
-#                                                provider needs a data-policy toggle the auto-router would've avoided
-LLM_MODEL = "openrouter/free"
+#   "meta-llama/llama-3.3-70b-instruct:free" -> reliable native tool-calling support, avoids the raw
+#                                                <|tool_call_start|>/<tool_call> text-leak issue seen with
+#                                                some models the "openrouter/free" auto-router can pick
+#   "openrouter/free"                        -> auto-router picks any available free model each call -
+#                                                convenient, but some picks don't implement tool-calling
+#                                                properly and leak raw tokens into the reply text
+LLM_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
 
 # Simple in-memory conversation history (per device, keyed by device_id)
 conversation_memory = {}
@@ -277,6 +280,38 @@ def run_tool(name, args):
         return f"Unknown tool: {name}", None
 
 
+# ---------------- DEFENSIVE FALLBACK: catch leaked raw tool-call text ----------------
+# Some weaker free models don't properly use OpenRouter's structured tool_calls field
+# and instead leak their own internal tool-call syntax as plain text content, e.g.:
+#   <|tool_call_start|>[[search(query='...')]<|tool_call_end|>
+#   <tool_call>web_search\n<arg_key>query</arg_key>\n<arg_value>...</arg_value>\n</tool_call>
+# These patterns catch the common leaked formats and extract (tool_name, argument)
+# so we can still run the right tool instead of showing garbage text to the user.
+_LEAK_PATTERNS = [
+    re.compile(r"(\w+)\s*\(\s*(?:query|city|argument)\s*=\s*['\"](.+?)['\"]\s*\)", re.IGNORECASE),
+    re.compile(r"<tool_call>\s*(\w+).*?<arg_value>(.+?)</arg_value>", re.IGNORECASE | re.DOTALL),
+]
+_LEAK_NAME_MAP = {
+    "search": "web_search", "web_search": "web_search",
+    "weather": "get_weather", "get_weather": "get_weather",
+    "song": "play_song", "play_song": "play_song",
+}
+
+
+def detect_leaked_tool_call(content):
+    """Returns (tool_name, argument) if leaked tool-call text is found, else None."""
+    if not content:
+        return None
+    for pattern in _LEAK_PATTERNS:
+        match = pattern.search(content)
+        if match:
+            raw_name, arg = match.group(1), match.group(2)
+            mapped_name = _LEAK_NAME_MAP.get(raw_name.lower())
+            if mapped_name:
+                return mapped_name, arg.strip()
+    return None
+
+
 def get_llm_reply(user_text, device_id="default", sensor_context=None):
     """Send text to OpenRouter LLM, run a tool via OpenRouter's native function-calling
     API if requested, and return the final reply.
@@ -328,6 +363,7 @@ def get_llm_reply(user_text, device_id="default", sensor_context=None):
     assistant_message = call_llm(messages)
     song_audio_url = None
     tool_calls = assistant_message.get("tool_calls")
+    leaked = None if tool_calls else detect_leaked_tool_call(assistant_message.get("content"))
 
     if tool_calls:
         # Only handle the first tool call for simplicity (our tools are single-step)
@@ -352,6 +388,20 @@ def get_llm_reply(user_text, device_id="default", sensor_context=None):
         ]
         final_message = call_llm(followup_messages, use_tools=False)
         final_reply = final_message.get("content") or tool_result_text
+
+    elif leaked:
+        # The model leaked its own raw tool-call syntax instead of using the
+        # proper structured format - run the tool anyway based on what we parsed.
+        fn_name, fn_arg = leaked
+        arg_key = "city" if fn_name == "get_weather" else "query"
+        tool_result_text, song_audio_url = run_tool(fn_name, {arg_key: fn_arg})
+
+        followup_messages = messages + [
+            {"role": "user", "content": f"[Tool result: {tool_result_text}] Answer the user naturally in 1-2 short sentences using this information."}
+        ]
+        final_message = call_llm(followup_messages, use_tools=False)
+        final_reply = final_message.get("content") or tool_result_text
+
     else:
         final_reply = assistant_message.get("content") or "Sorry, I couldn't come up with a reply just now."
 
