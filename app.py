@@ -12,6 +12,7 @@ app = Flask(__name__)
 # ---------------- CONFIG ----------------
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")  # web search tool won't work without this
 GOOGLE_DRIVE_API_KEY = os.environ.get("GOOGLE_DRIVE_API_KEY", "")      # optional - your own songs on Drive
 GOOGLE_DRIVE_FOLDER_ID = os.environ.get("GOOGLE_DRIVE_FOLDER_ID", "")  # the shared folder holding your mp3s
 
@@ -98,32 +99,37 @@ def tool_get_weather(location):
 
 
 def tool_web_search(query):
-    """Free web/news search via DuckDuckGo (no API key or signup needed).
-    NOTE: This uses an unofficial scraping-based library (ddgs), since
-    DuckDuckGo has no official free search API. It can occasionally get
-    rate-limited or blocked (especially from cloud/datacenter IPs like
-    Render's), in which case it will return an error message instead of
-    crashing - the LLM will just tell the user search isn't available
-    right now."""
-    from ddgs import DDGS
+    """Web/news search via Tavily's official free-tier API. Requires TAVILY_API_KEY
+    (free sign up, no card needed). More reliable than unofficial scraping-based
+    alternatives, which tend to get rate-limited from cloud/datacenter IPs."""
+    if not TAVILY_API_KEY:
+        return "Web search is not configured on this server (missing TAVILY_API_KEY)."
 
     try:
-        results = list(DDGS().news(query, max_results=3))
-        if not results:
-            # Fall back to general text search if no news results
-            results = list(DDGS().text(query, max_results=3))
+        resp = requests.post(
+            "https://api.tavily.com/search",
+            json={
+                "api_key": TAVILY_API_KEY,
+                "query": query,
+                "max_results": 3,
+                "search_depth": "basic",
+                "topic": "news",
+            }
+        )
+        resp.raise_for_status()
+        data = resp.json()
     except Exception as e:
         return f"Web search is temporarily unavailable ({e})."
 
+    results = data.get("results", [])
     if not results:
         return f"No search results found for '{query}'."
 
     summary_parts = []
     for r in results[:3]:
         title = r.get("title", "")
-        body = (r.get("body") or "")[:200]
-        date = r.get("date", "")
-        summary_parts.append(f"{title} ({date}): {body}" if date else f"{title}: {body}")
+        content = (r.get("content") or "")[:200]
+        summary_parts.append(f"{title}: {content}")
 
     return " | ".join(summary_parts)
 
