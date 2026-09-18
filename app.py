@@ -18,11 +18,15 @@ GOOGLE_DRIVE_FOLDER_ID = os.environ.get("GOOGLE_DRIVE_FOLDER_ID", "")  # the sha
 GROQ_STT_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-# Fixed, pinned model choice: OpenAI's own open-weight model, purpose-trained
-# for function calling / tool use (Harmony format). Hosted directly by OpenAI
-# on OpenRouter's free tier, so it avoids most of the "no provider satisfies
-# policy + tool-calling" 404 issues seen with other pinned third-party models.
-LLM_MODEL = "openai/gpt-oss-20b:free"
+# FIXED MODEL: openrouter/free is the only choice confirmed to work with the
+# "tools" parameter in this account/region - every pinned specific model
+# (llama-3.3-70b, gpt-oss-20b, etc.) 404s when tools[] is included, likely
+# because no provider for that exact model satisfies both your data-policy
+# settings AND tool-calling support at the same time. openrouter/free avoids
+# this by picking whichever available model satisfies both conditions.
+# The detect_leaked_tool_call() fallback below catches cases where the
+# auto-picked model doesn't use the structured tool_calls format properly.
+LLM_MODEL = "openrouter/free"
 
 # Simple in-memory conversation history (per device, keyed by device_id)
 conversation_memory = {}
